@@ -23,3 +23,13 @@ The classical Hill Cipher, while innovative for its use of matrix algebra, suffe
 
 ## Current Status
 🚧 **Project Initialized** - Design and documentation phase.
+
+## Installation & Usage
+
+
+# Clone the repository
+git clone https://github.com/manthans2004/Project-Citadel.git
+
+# Run the cipher
+cd Project-Citadel/src
+python citadel_cipher.py
