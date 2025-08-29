@@ -169,6 +169,41 @@ def get_vector_input(name, size=2):
                 print("Please enter a valid integer!")
     return vector
 
+def test_complete_cipher():
+    """Test the complete encryption and decryption cycle"""
+    print("\n" + "="*50)
+    print("FINAL TEST: Complete Encryption & Decryption")
+    print("="*50)
+    
+    # Test parameters from our worked example
+    key = [[3, 5], [2, 7]]
+    iv = [1, 2]
+    plaintext = "HELP"
+    
+    print(f"Plaintext:  {plaintext}")
+    print(f"Key:        {key}")
+    print(f"IV:         {iv}")
+    
+    # Encrypt
+    ciphertext = encrypt(plaintext, key, iv, example_sbox)
+    print(f"Encrypted:  {ciphertext}")
+    
+    # Decrypt
+    decrypted = decrypt(ciphertext, key, iv, example_inverse_sbox)
+    print(f"Decrypted:  {decrypted}")
+    
+    # Verify
+    if decrypted == plaintext:
+        print("✅ SUCCESS: Encryption and decryption work perfectly!")
+    else:
+        print("❌ ERROR: Something went wrong!")
+    
+    return decrypted == plaintext
+
+# Add this to your main tester menu (option 6)
+# elif choice == '6':
+#     test_complete_cipher()
+
 if __name__ == "__main__":
     print("🧪 Dynamic Math Engine Tester")
     print("=" * 40)
