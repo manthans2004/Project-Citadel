@@ -142,21 +142,9 @@ def example_sbox(x):
 def example_inverse_sbox(y):
     return (15*y + 23) % 26
 
-def encrypt(plaintext, key_matrix, iv, sbox_func):
-    """
-    The main encryption function.
-    Follows the pseudocode from our design.
-    """
-    # TODO: Implement this function
-    pass
 
-def decrypt(ciphertext, key_matrix, iv, inverse_sbox_func):
-    """
-    The main decryption function.
-    Follows the pseudocode from our design.
-    """
-    # TODO: Implement this function
-    pass
+
+
 
 # --- Main execution area for testing ---
 if __name__ == "__main__":
@@ -170,6 +158,28 @@ if __name__ == "__main__":
     converted_text = vectors_to_text(test_vector_list)
     print(f"Original vectors: {test_vector_list}")
     print(f"Converted text: {converted_text}") # Should be "HELP"
+    print("\nTesting apply_sbox and example_sbox...")
+    test_vector = [22, 2] # This is the output of the Hill step for the first block in our example
+    sbox_result = apply_sbox(test_vector, example_sbox)
+    print(f"S-Box applied to {test_vector}: {sbox_result}")
+    print(f"Expected result for [22, 2]: [1, 17]") # From our worked_example.md
+    # Let's also test the inverse quickly to see if it works (This is a preview for Person 2)
+    inverse_result = apply_sbox(sbox_result, example_inverse_sbox)
+    print(f"Inverse S-Box applied to {sbox_result}: {inverse_result} (Should be original {test_vector})")
     print("\n" + "="*50)
     print("FULL ENCRYPTION TEST")
     print("="*50)
+
+    # Test parameters from our worked_example.md
+    test_plaintext = "HELP"
+    test_key = [[3, 5], [2, 7]]
+    test_iv = [1, 2]
+    test_sbox = example_sbox
+
+    print(f"Encrypting: '{test_plaintext}'")
+    print(f"With Key: {test_key}")
+    print(f"With IV: {test_iv}")
+
+    ciphertext_result = encrypt(test_plaintext, test_key, test_iv, test_sbox)
+    print(f"\nFinal Ciphertext: {ciphertext_result}")
+    print(f"Expected Ciphertext: BRPB") # From our worked_example.md
