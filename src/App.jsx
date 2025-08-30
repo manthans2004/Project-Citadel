@@ -1,491 +1,322 @@
 import React, { useState } from "react";
+import { saveAs } from "file-saver";
 import "./App.css";
 
-/**
- * Project Citadel visualizer (React)
- * - Shows matrix/table style steps for:
- *   • Classical Hill (ECB)
- *   • Citadel (CBC + S-Box)
- * - Block size fixed to 2.
- * - S-Box: S(x) = (7x + 3) mod 26
- */
-
-const MOD = 26;
-const BLOCK = 2;
-const ALPH = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-function mod(n) {
-  return ((n % MOD) + MOD) % MOD;
-}
-function charToNum(ch) {
-  return ALPH.indexOf(ch);
-}
-function numToChar(n) {
-  return ALPH[mod(n)];
-}
-function sanitizeText(t) {
-  const s = (t || "").toUpperCase().replace(/[^A-Z]/g, "");
-  const pad = (BLOCK - (s.length % BLOCK)) % BLOCK;
-  return s + "X".repeat(pad);
-}
-function textToBlocks(text) {
-  const s = sanitizeText(text);
-  const nums = Array.from(s).map((c) => charToNum(c));
-  const blocks = [];
-  for (let i = 0; i < nums.length; i += BLOCK) {
-    blocks.push(nums.slice(i, i + BLOCK));
+/* --- Helpers --- */
+const arrayBufferToBase64 = (buffer) => {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   }
-  return { blocks, padded: s };
-}
-function blocksToText(blocks) {
-  return blocks.flat().map((n) => numToChar(n)).join("");
-}
+  return btoa(binary);
+};
 
-// S-Box and inverse
-const SBOX = Array.from({ length: 26 }, (_, x) => (7 * x + 3) % 26);
-const SBOX_INV = (() => {
-  const inv = new Array(26).fill(null);
-  SBOX.forEach((val, i) => (inv[val] = i));
-  return inv;
-})();
+const base64ToArrayBuffer = (b64) => {
+  const binary = atob(b64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+};
 
-// 2x2 matrix multiply
-function matMul2x2(K, v) {
-  const a = K[0][0],
-    b = K[0][1],
-    c = K[1][0],
-    d = K[1][1];
-  return [mod(a * v[0] + b * v[1]), mod(c * v[0] + d * v[1])];
-}
+const hexToUint8Array = (hex) => {
+  const pairs = hex.match(/.{1,2}/g) || [];
+  return new Uint8Array(pairs.map((p) => parseInt(p, 16)));
+};
 
-// modular inverse integer via extended gcd
-function egcd(a, b) {
-  if (b === 0) return { g: a, x: 1, y: 0 };
-  const r = egcd(b, a % b);
-  return { g: r.g, x: r.y, y: r.x - Math.floor(a / b) * r.y };
-}
-function modInverseInt(a, m) {
-  const r = egcd(mod(a), m);
-  if (r.g !== 1) return null;
-  return mod(r.x);
-}
+const tryParseKeyInput = (str) => {
+  const s = str.trim();
+  // try base64 first
+  try {
+    const ab = base64ToArrayBuffer(s);
+    return new Uint8Array(ab);
+  } catch (e) {
+    // try hex (only hex characters)
+    if (/^[0-9a-fA-F]+$/.test(s) && s.length % 2 === 0) {
+      return hexToUint8Array(s);
+    }
+    throw new Error("Key/IV: not valid Base64 or hex");
+  }
+};
 
-// inverse 2x2 matrix mod 26
-function invKey2x2(K) {
-  const a = K[0][0],
-    b = K[0][1],
-    c = K[1][0],
-    d = K[1][1];
-  const det = mod(a * d - b * c);
-  const detInv = modInverseInt(det, MOD);
-  if (detInv === null) return null;
-  const adj = [
-    [mod(d), mod(-b)],
-    [mod(-c), mod(a)],
-  ];
-  return [
-    [mod(detInv * adj[0][0]), mod(detInv * adj[0][1])],
-    [mod(detInv * adj[1][0]), mod(detInv * adj[1][1])],
-  ];
-}
+const concatUint8 = (...arrs) => {
+  const total = arrs.reduce((sum, a) => sum + a.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const a of arrs) {
+    out.set(a, offset);
+    offset += a.length;
+  }
+  return out;
+};
 
-// parse key "a b c d" -> [[a,b],[c,d]]
-function parseKeyText(s) {
-  const parts = s
-    .trim()
-    .split(/\s+/)
-    .map((p) => parseInt(p, 10));
-  if (parts.length !== 4 || parts.some((n) => Number.isNaN(n)))
-    throw new Error("Key must be 4 integers (row-major): a b c d");
-  return [
-    [mod(parts[0]), mod(parts[1])],
-    [mod(parts[2]), mod(parts[3])],
-  ];
-}
-function parseIvText(s) {
-  const parts = s
-    .trim()
-    .split(/\s+/)
-    .map((p) => parseInt(p, 10));
-  if (parts.length !== BLOCK || parts.some((n) => Number.isNaN(n)))
-    throw new Error(`IV must be ${BLOCK} integers (0..25)`);
-  return parts.map((n) => mod(n));
-}
+const u32ToBigEndian4 = (n) => {
+  return new Uint8Array([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
+};
 
-// vector add/sub mod 26
-function addVec(a, b) {
-  return a.map((x, i) => mod(x + b[i]));
-}
-function subVec(a, b) {
-  return a.map((x, i) => mod(x - b[i]));
-}
-function applySBoxVec(v) {
-  return v.map((x) => SBOX[x]);
-}
-function applyInvSBoxVec(v) {
-  return v.map((x) => SBOX_INV[x]);
-}
+const bigEndian4ToU32 = (u8) => {
+  return (u8[0] << 24) | (u8[1] << 16) | (u8[2] << 8) | u8[3];
+};
 
-/* --- React Component --- */
+/* --- App --- */
 export default function App() {
-  const [plaintext, setPlaintext] = useState("HELP");
-  const [keyText, setKeyText] = useState("3 5 2 7");
-  const [ivText, setIvText] = useState("1 21");
+  const [encKeyB64, setEncKeyB64] = useState("");
+  const [encIvB64, setEncIvB64] = useState("");
+  const [encFile, setEncFile] = useState(null); // uploaded .enc for decrypt
+  const [decKeyInput, setDecKeyInput] = useState("");
+  const [decIvInput, setDecIvInput] = useState("");
+  const [status, setStatus] = useState({ text: "", type: "" });
 
-  const [hillCiphertext, setHillCiphertext] = useState("");
-  const [citadelCiphertext, setCitadelCiphertext] = useState("");
+  const readFileAsArrayBuffer = (file) =>
+    new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.onerror = rej;
+      r.readAsArrayBuffer(file);
+    });
 
-  const [encStepsHill, setEncStepsHill] = useState([]); // array of step objects
-  const [encStepsCitadel, setEncStepsCitadel] = useState([]);
+  const readFileAsText = (file) =>
+    new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.onerror = rej;
+      r.readAsText(file);
+    });
 
-  const [decStepsHill, setDecStepsHill] = useState([]);
-  const [decStepsCitadel, setDecStepsCitadel] = useState([]);
-
-  const [lastError, setLastError] = useState("");
-
-  function runEncrypt() {
-    setLastError("");
-    setEncStepsHill([]);
-    setEncStepsCitadel([]);
-    setDecStepsHill([]);
-    setDecStepsCitadel([]);
-    try {
-      const K = parseKeyText(keyText);
-      const IV = parseIvText(ivText);
-      const { blocks, padded } = textToBlocks(plaintext);
-      // hill (classical, ECB)
-      const hSteps = [];
-      const hillCblocks = [];
-      blocks.forEach((P, idx) => {
-        const hill = matMul2x2(K, P); // K·P
-        hSteps.push({
-          blockIndex: idx + 1,
-          P,
-          Pletters: blocksToText([P]),
-          hill,
-          hillLetters: blocksToText([hill]),
-        });
-        hillCblocks.push(hill.slice());
-      });
-
-      // citadel (CBC + S-Box)
-      const cSteps = [];
-      let prev = IV.slice();
-      const citadelCblocks = [];
-      blocks.forEach((P, idx) => {
-        const combined = addVec(P, prev); // P xor/plus prev
-        const hill = matMul2x2(K, combined);
-        const afterS = applySBoxVec(hill);
-        cSteps.push({
-          blockIndex: idx + 1,
-          P,
-          Pletters: blocksToText([P]),
-          prev: prev.slice(),
-          combined,
-          hill,
-          afterS,
-          cLetters: blocksToText([afterS]),
-        });
-        citadelCblocks.push(afterS.slice());
-        prev = afterS.slice();
-      });
-
-      setEncStepsHill(hSteps);
-      setEncStepsCitadel(cSteps);
-      setHillCiphertext(blocksToText(hillCblocks));
-      setCitadelCiphertext(blocksToText(citadelCblocks));
-    } catch (e) {
-      setLastError(String(e.message || e));
+  const setStatusMsg = (txt, type = "") => {
+    setStatus({ text: txt, type });
+    // auto-clear after 5s for non-error
+    if (type !== "error") {
+      setTimeout(() => setStatus({ text: "", type: "" }), 5000);
     }
-  }
+  };
 
-  function runDecryptHill(ciphertext) {
-    setLastError("");
-    setDecStepsHill([]);
+  /* ---------- ENCRYPT (WebCrypto AES-GCM, authenticated & fast) ---------- */
+  const handleEncryptFile = async (e) => {
+    setStatus({ text: "", type: "" });
+    const file = e.target.files?.[0];
+    if (!file) return;
+
     try {
-      const K = parseKeyText(keyText);
-      const invK = invKey2x2(K);
-      if (!invK) throw new Error("Key matrix not invertible mod 26 (Hill can't decrypt).");
-      const { blocks } = textToBlocks(ciphertext);
-      const steps = [];
-      blocks.forEach((C, idx) => {
-        const invHill = matMul2x2(invK, C); // K^-1 · C
-        steps.push({
-          blockIndex: idx + 1,
-          C,
-          Cletters: blocksToText([C]),
-          invHill,
-          Pletters: blocksToText([invHill]),
-        });
-      });
-      setDecStepsHill(steps);
-      return blocksToText(steps.map((s) => s.invHill));
-    } catch (e) {
-      setLastError(String(e.message || e));
-      return "";
-    }
-  }
+      const fileAb = await readFileAsArrayBuffer(file);
 
-  function runDecryptCitadel(ciphertext) {
-    setLastError("");
-    setDecStepsCitadel([]);
+      // metadata
+      const meta = JSON.stringify({ name: file.name, type: file.type || "application/octet-stream" });
+      const metaBytes = new TextEncoder().encode(meta);
+
+      // header = 4 bytes length of meta (big-endian) + metaBytes + file bytes
+      const header = u32ToBigEndian4(metaBytes.length);
+      const combined = concatUint8(header, metaBytes, new Uint8Array(fileAb));
+
+      // key (32 bytes) and iv (12 bytes) generation
+      const keyBytes = crypto.getRandomValues(new Uint8Array(32)); // 256-bit
+      const ivBytes = crypto.getRandomValues(new Uint8Array(12)); // 96-bit recommended for GCM
+
+      // import key
+      const cryptoKey = await crypto.subtle.importKey("raw", keyBytes.buffer, { name: "AES-GCM" }, false, ["encrypt"]);
+
+      // encrypt with AES-GCM (authenticating)
+      const cipherBuffer = await crypto.subtle.encrypt({ name: "AES-GCM", iv: ivBytes }, cryptoKey, combined.buffer);
+
+      // store ciphertext as base64 JSON (no key/iv inside)
+      const payload = { data: arrayBufferToBase64(cipherBuffer) };
+      const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+      saveAs(blob, file.name + ".enc");
+
+      // show key/iv to user in base64 (they must save these)
+      const keyB64 = arrayBufferToBase64(keyBytes.buffer);
+      const ivB64 = arrayBufferToBase64(ivBytes.buffer);
+      setEncKeyB64(keyB64);
+      setEncIvB64(ivB64);
+
+      setStatusMsg("Encrypted — .enc downloaded. Save Key & IV (shown below).", "success");
+
+      // try copy to clipboard (best-effort)
+      try {
+        await navigator.clipboard.writeText(`Key (base64): ${keyB64}\nIV (base64): ${ivB64}`);
+        setStatusMsg("Encrypted — key & iv copied to clipboard.", "success");
+      } catch (_) {}
+    } catch (err) {
+      console.error(err);
+      setStatusMsg("Encryption failed.", "error");
+    }
+  };
+
+  const copyToClipboard = async (text) => {
     try {
-      const K = parseKeyText(keyText);
-      const IV = parseIvText(ivText);
-      const invK = invKey2x2(K);
-      if (!invK) throw new Error("Key matrix not invertible mod 26 (Citadel can't decrypt).");
-      const { blocks } = textToBlocks(ciphertext);
-      const steps = [];
-      let prev = IV.slice();
-      blocks.forEach((C, idx) => {
-        const invS = applyInvSBoxVec(C);
-        const invHill = matMul2x2(invK, invS);
-        const P = subVec(invHill, prev); // undo CBC add
-        steps.push({
-          blockIndex: idx + 1,
-          C,
-          Cletters: blocksToText([C]),
-          invS,
-          invHill,
-          prev: prev.slice(),
-          P,
-          Pletters: blocksToText([P]),
-        });
-        prev = C.slice();
-      });
-      setDecStepsCitadel(steps);
-      return blocksToText(steps.map((s) => s.P));
-    } catch (e) {
-      setLastError(String(e.message || e));
-      return "";
+      await navigator.clipboard.writeText(text);
+      setStatusMsg("Copied to clipboard.", "success");
+    } catch {
+      setStatusMsg("Copy failed.", "error");
     }
-  }
+  };
 
-  // UI handlers for decrypt buttons (use displayed ciphertext by default)
-  function handleDecryptHill() {
-    const ct = hillCiphertext.trim();
-    if (!ct) {
-      setLastError("No Hill ciphertext available to decrypt. Press Encrypt first or paste a ciphertext.");
+  /* ---------- DECRYPT (uses WebCrypto AES-GCM; authenticated) ---------- */
+  const handleEncUpload = (e) => {
+    setEncFile(e.target.files?.[0] || null);
+    setStatus({ text: "", type: "" });
+  };
+
+  const handleDecrypt = async () => {
+    setStatus({ text: "", type: "" });
+
+    if (!encFile) {
+      setStatusMsg("Upload a .enc file to decrypt.", "error");
       return;
     }
-    runDecryptHill(ct);
-  }
-  function handleDecryptCitadel() {
-    const ct = citadelCiphertext.trim();
-    if (!ct) {
-      setLastError("No Citadel ciphertext available to decrypt. Press Encrypt first or paste a ciphertext.");
+    if (!decKeyInput.trim() || !decIvInput.trim()) {
+      setStatusMsg("Enter Key and IV (base64 or hex).", "error");
       return;
     }
-    runDecryptCitadel(ct);
-  }
 
-  function randomizeIv() {
-    const r = Array.from({ length: BLOCK }, () => Math.floor(Math.random() * 26));
-    setIvText(r.join(" "));
-  }
+    // parse .enc JSON
+    let payload;
+    try {
+      const encText = await readFileAsText(encFile);
+      payload = JSON.parse(encText);
+      if (!payload?.data) throw new Error("Bad payload");
+    } catch {
+      setStatusMsg("Uploaded file is not a valid Citadel .enc file (JSON missing).", "error");
+      return;
+    }
+
+    // parse provided key/iv (base64 or hex)
+    let keyBytes, ivBytes;
+    try {
+      keyBytes = tryParseKeyInput(decKeyInput);
+      ivBytes = tryParseKeyInput(decIvInput);
+    } catch (e) {
+      setStatusMsg("Key/IV must be Base64 or hex and valid length.", "error");
+      return;
+    }
+
+    // basic length checks
+    if (keyBytes.length !== 32) {
+      setStatusMsg("Key must be 32 bytes (256-bit). Provide base64 or 64-hex chars.", "error");
+      return;
+    }
+    if (ivBytes.length !== 12 && ivBytes.length !== 16) {
+      // prefer 12, but allow 16 if user used 128-bit iv — warn but still try
+      setStatusMsg("Warning: IV length looks unusual (recommended 12 bytes). Attempting decryption anyway.", "warning");
+      // continue
+    }
+
+    // prepare cipher ArrayBuffer
+    const cipherAb = base64ToArrayBuffer(payload.data);
+
+    // import key
+    let cryptoKey;
+    try {
+      cryptoKey = await crypto.subtle.importKey("raw", keyBytes.buffer, { name: "AES-GCM" }, false, ["decrypt"]);
+    } catch (e) {
+      setStatusMsg("Failed to import key. Ensure key format is correct.", "error");
+      return;
+    }
+
+    // attempt decrypt — if key/iv wrong, this will reject
+    let decryptedBuffer;
+    try {
+      decryptedBuffer = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBytes }, cryptoKey, cipherAb);
+    } catch (err) {
+      console.warn("decrypt error", err);
+      setStatusMsg("❌ Decryption failed. Key and IV do not match this encrypted file (or file corrupted).", "error");
+      return;
+    }
+
+    try {
+      // parse decrypted payload: first 4 bytes = metadata length (big-endian)
+      const dv = new Uint8Array(decryptedBuffer);
+      if (dv.length < 4) {
+        setStatusMsg("Decryption produced unexpected data.", "error");
+        return;
+      }
+      const metaLen = bigEndian4ToU32(dv.subarray(0, 4));
+      if (metaLen <= 0 || metaLen > dv.length - 4) {
+        setStatusMsg("Decrypted metadata length invalid — wrong Key/IV or corrupted.", "error");
+        return;
+      }
+      const metaBytes = dv.subarray(4, 4 + metaLen);
+      const dataBytes = dv.subarray(4 + metaLen);
+
+      const metaStr = new TextDecoder().decode(metaBytes);
+      let meta;
+      try {
+        meta = JSON.parse(metaStr);
+      } catch {
+        setStatusMsg("Decrypted metadata is invalid — wrong Key/IV or corrupted.", "error");
+        return;
+      }
+
+      // create Blob and download
+      const outBlob = new Blob([dataBytes], { type: meta.type || "application/octet-stream" });
+      saveAs(outBlob, meta.name || "decrypted_file");
+      setStatusMsg(`✅ Decrypted and downloaded "${meta.name || "decrypted_file"}".`, "success");
+    } catch (err) {
+      console.error(err);
+      setStatusMsg("Unexpected error while finalizing decrypted file.", "error");
+    }
+  };
 
   return (
-    <div className="page">
-      <h1>Project Citadel — Visualizer (Hill vs Citadel)</h1>
-      <div className="controls">
-        <div className="left">
-          <label>Plaintext (letters only)</label>
-          <textarea value={plaintext} onChange={(e) => setPlaintext(e.target.value)} />
+    <div className="app-container">
+      <header style={{ textAlign: "center", marginBottom: 14 }}>
+        <h1 className="title">Citadel — Fast & Authenticated Encrypt/Decrypt</h1>
+        <p className="muted">AES-GCM (WebCrypto). Only exact Key + IV will decrypt.</p>
+      </header>
 
-          <label>Key (2×2 row-major: a b c d)</label>
-          <input value={keyText} onChange={(e) => setKeyText(e.target.value)} />
+      <section className="section">
+        <h2>Encrypt</h2>
+        <p className="muted">Select a file. A <code>.enc</code> file will be downloaded. Save Key & IV shown below.</p>
+        <input type="file" className="file-input" onChange={handleEncryptFile} />
+        {encKeyB64 && (
+          <div className="key-iv-card" style={{ marginTop: 14 }}>
+            <div className="key-iv-item">
+              <div>
+                <div style={{ fontSize: 12, color: "#aab" }}>Key (base64)</div>
+                <div style={{ marginTop: 6, wordBreak: "break-all" }}>{encKeyB64}</div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <button type="button" className="copy-btn" onClick={() => copyToClipboard(encKeyB64)}>Copy</button>
+              </div>
+            </div>
 
-          <label>IV (2 numbers separated by space)</label>
-          <input value={ivText} onChange={(e) => setIvText(e.target.value)} />
-
-          <div className="buttons">
-            <button onClick={runEncrypt}>Encrypt (show steps)</button>
-            <button onClick={handleDecryptHill}>Decrypt Hill</button>
-            <button onClick={handleDecryptCitadel}>Decrypt Citadel</button>
-            <button className="ghost" onClick={randomizeIv}>Random IV</button>
+            <div className="key-iv-item" style={{ marginTop: 10 }}>
+              <div>
+                <div style={{ fontSize: 12, color: "#aab" }}>IV (base64)</div>
+                <div style={{ marginTop: 6, wordBreak: "break-all" }}>{encIvB64}</div>
+              </div>
+              <div>
+                <button type="button" className="copy-btn" onClick={() => copyToClipboard(encIvB64)}>Copy</button>
+              </div>
+            </div>
           </div>
+        )}
+      </section>
 
-          {lastError && <div className="error">Error: {lastError}</div>}
+      <section className="section">
+        <h2>Decrypt</h2>
+        <p className="muted">Upload the <code>.enc</code> file produced earlier, paste Key & IV (base64 or hex).</p>
+        <input type="file" className="file-input" accept=".enc,application/json" onChange={handleEncUpload} />
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <input type="text" placeholder="Key (base64 or hex)" value={decKeyInput} onChange={(e) => setDecKeyInput(e.target.value)} />
+          <input type="text" placeholder="IV (base64 or hex)" value={decIvInput} onChange={(e) => setDecIvInput(e.target.value)} />
+          <div style={{ display: "flex", gap: 10 }}>
+            <button type="button" className="btn primary" onClick={handleDecrypt}>Decrypt & Download</button>
+            <button type="button" className="btn" onClick={() => { setDecKeyInput(encKeyB64); setDecIvInput(encIvB64); setStatusMsg("Filled Key & IV from last encryption.", "success"); }}>Fill Last Key/IV</button>
+          </div>
         </div>
+      </section>
 
-        <div className="right">
-          <div className="box">
-            <div className="small">Classical Hill (ECB) ciphertext</div>
-            <input className="mono" value={hillCiphertext} onChange={(e) => setHillCiphertext(e.target.value)} />
-            <div className="small muted">Press Decrypt Hill to view decryption steps.</div>
-          </div>
-
-          <div className="box" style={{ marginTop: 10 }}>
-            <div className="small">Citadel (CBC + S-Box) ciphertext</div>
-            <input className="mono" value={citadelCiphertext} onChange={(e) => setCitadelCiphertext(e.target.value)} />
-            <div className="small muted">Press Decrypt Citadel to view decryption steps.</div>
-          </div>
+      {status.text && (
+        <div className={`status ${status.type}`} role="status" style={{ marginTop: 16 }}>
+          {status.text}
         </div>
-      </div>
+      )}
 
-      <section>
-        <h2>Encryption - Classical Hill</h2>
-        {encStepsHill.length === 0 ? (
-          <div className="note">No Hill encryption run yet. Press Encrypt.</div>
-        ) : (
-          <div className="steps-grid">
-            {encStepsHill.map((s) => (
-              <div key={s.blockIndex} className="step-card">
-                <div className="card-title">Block {s.blockIndex}</div>
-                <table className="matrix-table">
-                  <tbody>
-                    <tr>
-                      <td>Plain letters</td>
-                      <td className="mono">{s.Pletters}</td>
-                    </tr>
-                    <tr>
-                      <td>Plain nums</td>
-                      <td className="mono">{s.P.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>K · P (Hill)</td>
-                      <td className="mono">{s.hill.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>Cipher letters</td>
-                      <td className="mono">{s.hillLetters}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section>
-        <h2>Encryption - Citadel (CBC + S-Box)</h2>
-        {encStepsCitadel.length === 0 ? (
-          <div className="note">No Citadel encryption run yet. Press Encrypt.</div>
-        ) : (
-          <div className="steps-grid">
-            {encStepsCitadel.map((s) => (
-              <div key={s.blockIndex} className="step-card">
-                <div className="card-title">Block {s.blockIndex}</div>
-                <table className="matrix-table">
-                  <tbody>
-                    <tr>
-                      <td>Plain letters</td>
-                      <td className="mono">{s.Pletters}</td>
-                    </tr>
-                    <tr>
-                      <td>Plain nums</td>
-                      <td className="mono">{s.P.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>Prev (IV / C_{s.blockIndex - 1})</td>
-                      <td className="mono">{s.prev.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>CBC add (P + Prev)</td>
-                      <td className="mono">{s.combined.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>K · (P+Prev)</td>
-                      <td className="mono">{s.hill.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>S-Box (7x+3 mod26)</td>
-                      <td className="mono">{s.afterS.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>Cipher letters</td>
-                      <td className="mono">{s.cLetters}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section>
-        <h2>Decryption — Classical Hill (table)</h2>
-        {decStepsHill.length === 0 ? (
-          <div className="note">No Hill decryption run yet. Press Decrypt Hill.</div>
-        ) : (
-          <div className="steps-grid">
-            {decStepsHill.map((s) => (
-              <div className="step-card" key={s.blockIndex}>
-                <div className="card-title">Block {s.blockIndex}</div>
-                <table className="matrix-table">
-                  <tbody>
-                    <tr>
-                      <td>Cipher letters</td>
-                      <td className="mono">{s.Cletters}</td>
-                    </tr>
-                    <tr>
-                      <td>Cipher nums</td>
-                      <td className="mono">{s.C.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>K⁻¹ · C</td>
-                      <td className="mono">{s.invHill.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>Recovered plain</td>
-                      <td className="mono">{s.Pletters}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section>
-        <h2>Decryption — Citadel (table)</h2>
-        {decStepsCitadel.length === 0 ? (
-          <div className="note">No Citadel decryption run yet. Press Decrypt Citadel.</div>
-        ) : (
-          <div className="steps-grid">
-            {decStepsCitadel.map((s) => (
-              <div className="step-card" key={s.blockIndex}>
-                <div className="card-title">Block {s.blockIndex}</div>
-                <table className="matrix-table">
-                  <tbody>
-                    <tr>
-                      <td>Cipher letters</td>
-                      <td className="mono">{s.Cletters}</td>
-                    </tr>
-                    <tr>
-                      <td>Cipher nums</td>
-                      <td className="mono">{s.C.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>Inv S-Box</td>
-                      <td className="mono">{s.invS.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>K⁻¹ · (InvS)</td>
-                      <td className="mono">{s.invHill.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>Subtract Prev (CBC)</td>
-                      <td className="mono">{s.P.join(", ")}</td>
-                    </tr>
-                    <tr>
-                      <td>Recovered plain</td>
-                      <td className="mono">{s.Pletters}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <footer className="foot">
-        Tip: use the Random IV button to demo different ciphertexts for the same plaintext (Citadel
-        will change; Hill will not).
+      <footer style={{ marginTop: 18, color: "rgba(230,238,248,0.6)", fontSize: 13 }}>
+        Tip: store Key & IV offline (not together with the .enc file).
       </footer>
     </div>
   );
