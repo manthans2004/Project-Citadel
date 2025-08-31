@@ -29,18 +29,6 @@ The classical Hill Cipher, while innovative for its use of matrix algebra, suffe
 - Provide a functional implementation for text and file encryption.
 - Deploy a web application for practical use.
 
-## Project Structure
-```
-Project-Citadel/
-├── app.py                 # Main Flask application
-├── requirements.txt       # Python dependencies
-├── Procfile              # Deployment configuration
-├── runtime.txt           # Python version specification
-├── templates/
-│   └── index.html        # Web interface
-└── README.md             # Project documentation
-```
-
 ## Installation & Usage
 
 ### Local Development
