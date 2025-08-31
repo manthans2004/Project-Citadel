@@ -320,4 +320,4 @@ def decrypt_image():
         return jsonify({'success': False, 'error': f'Image decryption error: {str(e)}'})
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+     app.run(debug=False, host='0.0.0.0', port=5000)
