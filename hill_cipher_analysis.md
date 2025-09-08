@@ -1,4 +1,4 @@
-# Project Citadel: Enhanced Hill Cipher with S-Box and CBC Mode
+# Project Citadel: Enhanced Hill Cipher with S-Box and CBC Modes
 
 ## Overview
 
