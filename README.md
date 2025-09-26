@@ -3,7 +3,7 @@
 
 > Reinforcing the Hill Cipher with Non-Linear Diffusion and CBC Mode
 
-A university cryptography project focused on analyzing the classical Hill Cipher and designing a modern, more secure enhancement.
+A  cryptography project focused on analyzing the classical Hill Cipher and designing a modern, more secure enhancement.
 
 ## Team Members
 - Manthan S 
